@@ -4,6 +4,9 @@ from app.config import Settings
 from app.rag.qdrant_store import QdrantStore
 
 
+DIET_PRINCIPLE = "季节饮食原则"
+
+
 class KnowledgeRetriever:
     def __init__(self, settings: Settings, store: QdrantStore):
         self.settings = settings
@@ -19,7 +22,7 @@ class KnowledgeRetriever:
     ) -> list[dict]:
         results: list[dict] = []
 
-        if advice_type is None or advice_type == "季节饮食原则":
+        if advice_type is None or advice_type == DIET_PRINCIPLE:
             results.extend(
                 self._search_with_fallback(
                     query=query,
@@ -30,7 +33,7 @@ class KnowledgeRetriever:
                 )
             )
 
-        if advice_type and advice_type != "季节饮食原则":
+        if advice_type and advice_type != DIET_PRINCIPLE:
             filters = {"type": "suggestion", "constitution": constitution, "suggestion_name": advice_type}
             results.extend(self._search_with_fallback(query, filters, area, season, limit=3))
         elif advice_type is None:
