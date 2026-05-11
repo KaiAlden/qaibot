@@ -1,3 +1,5 @@
+# 封装了与 Qdrant 向量数据库的所有交互，提供三个核心能力：建库、存数据、搜数据。
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -20,6 +22,7 @@ class QdrantStore:
             base_url=settings.embedding_base_url or None,
         )
 
+    # 检查 Qdrant 中是否有指定名称的集合，没有就自动创建
     def ensure_collection(self, collection_name: str) -> None:
         collections = self.client.get_collections().collections
         if any(c.name == collection_name for c in collections):
@@ -32,6 +35,7 @@ class QdrantStore:
             ),
         )
 
+    # 调用 OpenAI Embedding API，将文本转为向量
     def embed(self, texts: list[str]) -> list[list[float]]:
         response = self.embedding_client.embeddings.create(
             model=self.settings.embedding_model,
@@ -39,6 +43,7 @@ class QdrantStore:
         )
         return [item.embedding for item in response.data]
 
+    # 将知识片段向量化后存入 Qdrant
     def upsert_chunks(
         self,
         collection_name: str,
@@ -57,6 +62,7 @@ class QdrantStore:
             total += self._upsert_batch(collection_name, buffer)
         return total
 
+    # 用语义搜索从 Qdrant 中找到最相关的知识片段。
     def search(
         self,
         collection_name: str,
@@ -87,6 +93,13 @@ class QdrantStore:
         return [{"score": float(p.score), "payload": p.payload or {}} for p in points]
 
     def _upsert_batch(self, collection_name: str, chunks: list[KnowledgeChunk]) -> int:
+        """
+        批量内部实现:
+        - 批量调用 `embed()` 将所有 chunk 转为向量
+        - 为每个 chunk 生成稳定的 UUID__（用 `uuid5(NAMESPACE_URL, chunk.chunk_id)`）
+        - 构造 `PointStruct` 调用 Qdrant 的 `upsert` 存入
+
+        """
         vectors = self.embed([c.content for c in chunks])
         points = [
             models.PointStruct(
@@ -99,6 +112,7 @@ class QdrantStore:
         self.client.upsert(collection_name=collection_name, points=points)
         return len(points)
 
+    # 将 Python 字典转换为 Qdrant 的 Filter 对象。
     @staticmethod
     def _build_filter(filters: dict[str, object]) -> models.Filter | None:
         conditions = []
@@ -107,3 +121,23 @@ class QdrantStore:
                 continue
             conditions.append(models.FieldCondition(key=key, match=models.MatchValue(value=value)))
         return models.Filter(must=conditions) if conditions else None
+
+
+
+"""
+【导入时】
+build_index.py
+    → QdrantStore.upsert_chunks("constitution", chunks)
+        → ensure_collection()     # 建集合
+        → embed()                 # 转向量
+        → client.upsert()         # 存 Qdrant
+
+【运行时】
+ChatService.chat()
+    → KnowledgeRetriever.retrieve()
+        → QdrantStore.search("advice", query, filters)
+            → embed()             # 把用户问题转向量
+            → _build_filter()     # 构建过滤条件
+            → client.search()     # 在 Qdrant 中搜索
+
+"""

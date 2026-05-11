@@ -92,3 +92,29 @@ class IntentParser:
     @staticmethod
     def _contains_any(text: str, keywords: list[str]) -> bool:
         return any(keyword in text for keyword in keywords)
+
+
+
+"""
+用户说："我是气虚体质，在华北，适合吃什么调理？"
+
+parse() 处理过程：
+├── _extract_constitution("我是气虚体质") → "气虚体质"
+├── _extract_area("在华北")              → "华北"
+├── _extract_term("适合吃什么调理")       → None
+├── extract_symptoms(...)                → ["适合吃什么调理"]
+├── detect_advice_type(...)              → "季节饮食原则"
+├── _infer_intent(...)
+│   ├── 有症状 + 有饮食关键词 → "mixed"
+│
+└── 最终 ParsedIntent：
+    {
+        intent: "mixed",
+        symptoms: ["适合吃什么调理"],
+        constitution: "气虚体质",
+        area: "华北",
+        season: "春季",      # 自动推断当前季节
+        advice_type: "季节饮食原则"
+    }
+
+"""

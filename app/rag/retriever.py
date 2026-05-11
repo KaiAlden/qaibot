@@ -22,6 +22,20 @@ class KnowledgeRetriever:
     ) -> list[dict]:
         results: list[dict] = []
 
+        """
+        用户问饮食建议
+    ├── advice_type = None 或 "季节饮食原则"
+    │   → 从 "diet_principle" 类型中搜索（最多 2 条）
+    │
+    ├── advice_type = "运动建议"
+    │   → 从 "suggestion" 类型中搜索（最多 3 条）
+    │   → 并指定 suggestion_name = "运动建议"
+    │
+    └── advice_type = None（没有特定建议类型）
+        → 从 "suggestion" 类型中搜索（最多 4 条）
+        → 不限定 suggestion_name
+
+        """
         if advice_type is None or advice_type == DIET_PRINCIPLE:
             results.extend(
                 self._search_with_fallback(
@@ -55,6 +69,9 @@ class KnowledgeRetriever:
                 seen.add(chunk_id)
                 deduped.append(item)
         return deduped[: self.settings.default_top_k]
+    
+
+
 
     def _search_with_fallback(
         self,
@@ -82,3 +99,28 @@ class KnowledgeRetriever:
                     item["fallback_level"] = fallback_level
                 return found
         return []
+
+"""
+用户：气虚体质、华东、春季
+问："春天适合吃什么？"
+
+┌──────────────────────────────────────────────────┐
+│ 第1次尝试：                                         │
+│ 条件 = 体质"气虚" + 地区"华东" + 季节"春季"          │
+│ → 搜到结果？ ✅ → 返回（fallback_level 标记）        │
+│                                                     │
+│ 如果没搜到：                                         │
+│ 第2次尝试：                                         │
+│ 条件 = 体质"气虚" + 地区"华东"（去掉季节）             │
+│ → 搜到结果？ ✅ → 返回                               │
+│                                                     │
+│ 如果还没搜到：                                       │
+│ 第3次尝试：                                         │
+│ 条件 = 体质"气虚"（去掉地区和季节）                    │
+│ → 搜到结果？ ✅ → 返回                               │
+│                                                     │
+│ 仍然没搜到：                                         │
+│ → 返回空列表                                         │
+└──────────────────────────────────────────────────┘
+
+"""

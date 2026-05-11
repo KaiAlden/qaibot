@@ -1,8 +1,18 @@
-from __future__ import annotations
+from __future__ import annotations  # 解决前向引用冲突问题
 
-from dataclasses import dataclass
-import os
-from pathlib import Path
+from dataclasses import dataclass   #专为「存储数据的类」设计的神器装饰器
+"""
+@dataclass 默认自动生成 4 个最常用的方法：
+__init__：构造方法（自动赋值所有字段）
+__repr__：打印对象（显示字段值，不是乱码）
+__eq__：判断两个对象是否相等
+__ne__：判断两个对象是否不相等
+
+用法：配合 from __future__ import annotations 解决类型引用问题，主要储存数据没有复杂逻辑
+"""
+
+import os  # 用于访问环境变量
+from pathlib import Path  # 用于处理文件路径
 from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
@@ -131,3 +141,14 @@ def load_settings() -> Settings:
         rag_history_turns=_env_int("RAG_HISTORY_TURNS", 6),
         stream_heartbeat_seconds=_env_float("STREAM_HEARTBEAT_SECONDS", 8.0),
     )
+
+"""
+用户提问
+    │
+    ├── 步骤1: 取最近 6 轮 → 拼成一段话 → 去知识库搜（RAG）
+    │
+    ├── 步骤2: 取最近 12 轮 + 搜到的知识片段 → 发给 LLM
+    │
+    └── LLM 结合历史对话和知识库内容，生成最终回答
+
+"""

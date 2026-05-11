@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from hashlib import md5
+from hashlib import md5 #MD5 哈希算法工具，核心作用是给任意数据生成一个唯一的 "数字指纹"，在这里用来生成知识片段的唯一 ID。
 from pathlib import Path
 import re
 
@@ -26,6 +26,20 @@ def stable_chunk_id(*parts: object) -> str:
 
 
 def build_constitution_chunks(txt_path: Path) -> list[KnowledgeChunk]:
+    """
+    输入：constitution.txt（纯文本）
+         │
+         ▼
+    按空行分割成段落
+         │
+         ▼
+    每段开头找体质名（气虚体质、痰湿体质...）
+         │
+         ▼
+    组装成 KnowledgeChunk
+
+    """
+
     text = txt_path.read_text(encoding="utf-8")
     paragraphs = [clean_text(p) for p in re.split(r"\n\s*\n", text) if clean_text(p)]
     chunks: list[KnowledgeChunk] = []
@@ -47,6 +61,18 @@ def build_constitution_chunks(txt_path: Path) -> list[KnowledgeChunk]:
 
 
 def build_diet_chunks(df: pd.DataFrame) -> list[KnowledgeChunk]:
+    """
+    输入：Excel "季节饮食原则" 表
+         │
+         ▼
+    逐行读取，提取：地区、节气、体质、饮食内容
+         │
+         ▼
+    按 (地区, 季节, 体质) 分组聚合
+         │
+         ▼
+    组装成 KnowledgeChunk
+    """
     required = {"area_name", "solar_terms_name", "constitution_name", "suggestion_name", "attribute_1", "attribute_2"}
     _ensure_columns(df, required, "季节饮食原则")
 
@@ -85,6 +111,18 @@ def build_diet_chunks(df: pd.DataFrame) -> list[KnowledgeChunk]:
 
 
 def build_suggestion_chunks(df: pd.DataFrame) -> list[KnowledgeChunk]:
+    """
+    输入：Excel "suggestion" 表
+         │
+         ▼
+    逐行读取，提取：地区、节气、体质、建议类型、建议内容
+         │
+         ▼
+    按 (地区, 季节, 体质, 建议类型) 分组聚合
+         │
+         ▼
+    组装成 KnowledgeChunk
+    """
     required = {"area_name", "solar_terms_name", "constitution_name", "suggestion_name", "attribute_1"}
     _ensure_columns(df, required, "suggestion")
 
