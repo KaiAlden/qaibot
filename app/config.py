@@ -59,6 +59,8 @@ class Settings:
     llm_base_url: str
     llm_model: str
     llm_temperature: float
+    llm_request_timeout: float
+    llm_first_token_timeout: float
 
     embedding_provider: str
     embedding_api_key: str
@@ -83,6 +85,9 @@ class Settings:
 
     default_area: str
     default_top_k: int
+    rag_chunk_max_chars: int
+    rag_history_turns: int
+    stream_heartbeat_seconds: float
 
 
 def load_settings() -> Settings:
@@ -94,6 +99,8 @@ def load_settings() -> Settings:
         llm_base_url=_normalize_openai_base_url(_env("LLM_BASE_URL")),
         llm_model=_env("LLM_MODEL", "gpt-4o-mini"),
         llm_temperature=_env_float("LLM_TEMPERATURE", 0.2),
+        llm_request_timeout=_env_float("LLM_REQUEST_TIMEOUT", 90.0),
+        llm_first_token_timeout=_env_float("LLM_FIRST_TOKEN_TIMEOUT", 45.0),
         embedding_provider=_env("EMBEDDING_PROVIDER", "openai"),
         embedding_api_key=_env("EMBEDDING_API_KEY") or _env("LLM_API_KEY"),
         embedding_base_url=_normalize_openai_base_url(_env("EMBEDDING_BASE_URL") or _env("LLM_BASE_URL")),
@@ -120,4 +127,7 @@ def load_settings() -> Settings:
         session_history_turns=_env_int("SESSION_HISTORY_TURNS", 12),
         default_area=_env("DEFAULT_AREA", "华北"),
         default_top_k=_env_int("DEFAULT_TOP_K", 5),
+        rag_chunk_max_chars=_env_int("RAG_CHUNK_MAX_CHARS", 1000),
+        rag_history_turns=_env_int("RAG_HISTORY_TURNS", 6),
+        stream_heartbeat_seconds=_env_float("STREAM_HEARTBEAT_SECONDS", 8.0),
     )
