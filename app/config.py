@@ -85,6 +85,11 @@ class Settings:
 
     default_area: str
     default_top_k: int
+    constitution_identify_top_k: int
+    diet_principle_top_k: int
+    suggestion_top_k: int
+    suggestion_per_type_top_k: int
+    general_suggestion_top_k: int
     rag_chunk_max_chars: int
     rag_history_turns: int
     stream_heartbeat_seconds: float
@@ -127,6 +132,11 @@ def load_settings() -> Settings:
         session_history_turns=_env_int("SESSION_HISTORY_TURNS", 12),
         default_area=_env("DEFAULT_AREA", "华北"),
         default_top_k=_env_int("DEFAULT_TOP_K", 5),
+        constitution_identify_top_k=_env_int("CONSTITUTION_IDENTIFY_TOP_K", 4),
+        diet_principle_top_k=_env_int("DIET_PRINCIPLE_TOP_K", 1),
+        suggestion_top_k=_env_int("SUGGESTION_TOP_K", 1),
+        suggestion_per_type_top_k=_env_int("SUGGESTION_PER_TYPE_TOP_K", 1),
+        general_suggestion_top_k=_env_int("GENERAL_SUGGESTION_TOP_K", 4),
         rag_chunk_max_chars=_env_int("RAG_CHUNK_MAX_CHARS", 1000),
         rag_history_turns=_env_int("RAG_HISTORY_TURNS", 6),
         stream_heartbeat_seconds=_env_float("STREAM_HEARTBEAT_SECONDS", 8.0),

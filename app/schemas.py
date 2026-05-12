@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 Intent = Literal[
     "identify_constitution",
+    "constitution_explain",
     "diet_advice",
     "conditioning_advice",
     "mixed",
@@ -35,6 +36,7 @@ class SessionState(BaseModel):
     season: str | None = None
     last_intent: str | None = None
     last_advice_type: str | None = None
+    last_advice_types: list[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -52,6 +54,7 @@ class ParsedIntent(BaseModel):
     area: str | None = None
     season: str | None = None
     advice_type: str | None = None
+    advice_types: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
 
 

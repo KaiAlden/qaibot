@@ -10,6 +10,7 @@ from app.domain import (
     VALID_AREAS,
     current_season,
     detect_advice_type,
+    detect_advice_types,
     extract_symptoms,
     normalize_area,
     normalize_constitution,
@@ -24,9 +25,10 @@ class IntentParser:
         area = self._extract_area(message) or session.get("area")
         _, season = self._extract_term(message)
         season = season or session.get("season")
-        advice_type = detect_advice_type(message)
+        advice_types = detect_advice_types(message)
+        advice_type = advice_types[0] if advice_types else detect_advice_type(message)
         symptoms = extract_symptoms(message)
-        intent = self._infer_intent(message, symptoms, constitution, advice_type, session)
+        intent = self._infer_intent(message, symptoms, constitution, advice_types, session)
 
         if not season and intent in {"diet_advice", "conditioning_advice", "mixed", "general_followup"}:
             season = current_season(datetime.now().month)
@@ -38,6 +40,7 @@ class IntentParser:
             area=area,
             season=season,
             advice_type=advice_type,
+            advice_types=advice_types,
         )
 
     def _infer_intent(
@@ -45,13 +48,20 @@ class IntentParser:
         message: str,
         symptoms: list[str],
         constitution: str | None,
-        advice_type: str | None,
+        advice_types: list[str],
         session: dict,
     ) -> str:
         has_diet_question = self._contains_any(message, CATEGORY_KEYWORDS["diet_principle"])
-        has_conditioning_question = advice_type is not None
+        has_conditioning_question = bool(advice_types)
         asks_identity = self._contains_any(message, ["什么体质", "哪种体质", "判断体质", "识别体质"])
 
+        asks_constitution_explain = constitution and self._contains_any(
+            message,
+            ["特点", "特征", "表现", "症状", "是什么", "什么意思", "有哪些", "怎么判断"],
+        )
+
+        if asks_constitution_explain and not has_diet_question and not has_conditioning_question:
+            return "constitution_explain"
         if symptoms and (has_diet_question or has_conditioning_question):
             return "mixed"
         if asks_identity or (symptoms and not constitution):

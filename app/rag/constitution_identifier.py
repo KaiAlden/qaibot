@@ -20,7 +20,7 @@ class ConstitutionIdentifier:
             self.settings.qdrant_constitution_collection,
             message,
             filters={"type": "constitution_identify"},
-            limit=4,
+            limit=self.settings.constitution_identify_top_k,
         )
         context = "\n\n---\n\n".join(item["payload"].get("content", "") for item in candidates)
         if not context:
@@ -76,3 +76,14 @@ class ConstitutionIdentifier:
             "matched_symptoms": result.get("matched_symptoms", []),
             "reasoning": result.get("reasoning", ""),
         }
+
+    def retrieve_explanation(self, message: str, constitution: str) -> list[dict]:
+        results = self.store.search(
+            self.settings.qdrant_constitution_collection,
+            message,
+            filters={"type": "constitution_identify", "constitution": constitution},
+            limit=1,
+        )
+        for item in results:
+            item["fallback_level"] = "constitution"
+        return results

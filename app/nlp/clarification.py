@@ -11,7 +11,7 @@ class ClarificationDecider:
         if not parsed.constitution and parsed.intent in {"diet_advice", "conditioning_advice", "general_followup"}:
             return "我还不知道你的体质。请描述一下你最近的主要症状，比如怕冷、乏力、口干、胸闷、睡眠和大便情况。"
 
-        if not parsed.area and parsed.intent in {"diet_advice", "conditioning_advice", "mixed", "general_followup"}:
+        if not parsed.area and parsed.intent in {"diet_advice", "conditioning_advice", "mixed"}:
             return "请告诉我你所在的地区或省份，比如广东、北京、四川等，我会按地区匹配饮食和调理建议。"
 
         return None

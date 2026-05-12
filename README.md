@@ -138,6 +138,26 @@ SESSION_HISTORY_TURNS=12
 
 ## 5. RAG 核心模块
 
+### TopK retrieval settings
+
+The project keeps separate retrieval limits for different RAG stages. Defaults are optimized for the current structured knowledge base where `area + season + constitution + suggestion_name` normally points to one precise chunk.
+
+```env
+DEFAULT_TOP_K=5
+CONSTITUTION_IDENTIFY_TOP_K=4
+DIET_PRINCIPLE_TOP_K=1
+SUGGESTION_TOP_K=1
+SUGGESTION_PER_TYPE_TOP_K=1
+GENERAL_SUGGESTION_TOP_K=4
+```
+
+- `CONSTITUTION_IDENTIFY_TOP_K`: candidate constitution chunks used only for constitution identification.
+- `DIET_PRINCIPLE_TOP_K`: diet-principle chunks for explicit diet questions.
+- `SUGGESTION_TOP_K`: chunks for a single explicit conditioning category.
+- `SUGGESTION_PER_TYPE_TOP_K`: chunks per category for multi-category conditioning questions.
+- `GENERAL_SUGGESTION_TOP_K`: broader suggestion chunks for vague follow-up questions.
+- `DEFAULT_TOP_K`: final safety cap after merge and deduplication.
+
 ```text
 app/rag/chunk_builder.py
   读取 Excel/TXT，生成 constitution_identify、diet_principle、suggestion 三类 chunk。

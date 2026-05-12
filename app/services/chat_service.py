@@ -8,6 +8,7 @@ from time import perf_counter
 
 from app.config import Settings
 from app.nlp.clarification import ClarificationDecider
+from app.nlp.general_intent import UNSUPPORTED_ANSWER, GeneralIntentParser
 from app.nlp.intent_parser import IntentParser
 from app.rag.answer_generator import AnswerGenerator
 from app.rag.constitution_identifier import ConstitutionIdentifier
@@ -25,6 +26,7 @@ class ChatService:
         self.settings = settings
         self.store = QdrantStore(settings)
         self.sessions = SessionStore(settings)
+        self.general_parser = GeneralIntentParser()
         self.parser = IntentParser()
         self.clarifier = ClarificationDecider()
         self.identifier = ConstitutionIdentifier(settings, self.store)
@@ -33,6 +35,20 @@ class ChatService:
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         state = self.sessions.get(request.user_id, request.conversation_id)
+        general = self.general_parser.parse(request.message)
+        if general.answer:
+            state["last_intent"] = general.intent
+            state["last_advice_type"] = None
+            state["last_advice_types"] = []
+            self._save_turn(request, state, general.answer)
+            return ChatResponse(
+                answer=general.answer,
+                need_clarification=False,
+                clarification_question=None,
+                session_state=self.sessions.to_public_state(state),
+                retrieved_chunks=[],
+            )
+
         parsed = self.parser.parse(request.message, state)
         self._merge_parsed_state(state, parsed)
 
@@ -49,6 +65,34 @@ class ChatService:
             self._save_turn(request, state, answer)
             return ChatResponse(
                 answer=answer,
+                need_clarification=False,
+                clarification_question=None,
+                session_state=self.sessions.to_public_state(state),
+                retrieved_chunks=[],
+            )
+
+        if parsed.intent == "constitution_explain" and state.get("constitution"):
+            retrieved = self.identifier.retrieve_explanation(request.message, state["constitution"])
+            answer = self.generator.generate(request.message, state, retrieved, identification)
+            state["last_intent"] = parsed.intent
+            state["last_advice_type"] = None
+            state["last_advice_types"] = []
+            self._save_turn(request, state, answer)
+            return ChatResponse(
+                answer=answer,
+                need_clarification=False,
+                clarification_question=None,
+                session_state=self.sessions.to_public_state(state),
+                retrieved_chunks=self._retrieved_chunks(retrieved),
+            )
+
+        if parsed.intent == "irrelevant":
+            state["last_intent"] = parsed.intent
+            state["last_advice_type"] = None
+            state["last_advice_types"] = []
+            self._save_turn(request, state, UNSUPPORTED_ANSWER)
+            return ChatResponse(
+                answer=UNSUPPORTED_ANSWER,
                 need_clarification=False,
                 clarification_question=None,
                 session_state=self.sessions.to_public_state(state),
@@ -79,17 +123,20 @@ class ChatService:
             )
 
         advice_type = self._advice_type(parsed)
+        advice_types = self._advice_types(parsed)
         retrieved = self.retriever.retrieve(
             query=request.message,
             constitution=state["constitution"],
             area=state.get("area") or self.settings.default_area,
             season=state.get("season"),
             advice_type=advice_type,
+            advice_types=advice_types,
         )
 
         answer = self.generator.generate(request.message, state, retrieved, identification)
         state["last_intent"] = parsed.intent
         state["last_advice_type"] = advice_type
+        state["last_advice_types"] = advice_types
         self._save_turn(request, state, answer)
 
         return ChatResponse(
@@ -107,6 +154,17 @@ class ChatService:
         stage_at = perf_counter()
         yield self._sse("status", {"text": "正在理解你的问题..."})
         state = self.sessions.get(request.user_id, request.conversation_id)
+        general = self.general_parser.parse(request.message)
+        if general.answer:
+            state["last_intent"] = general.intent
+            state["last_advice_type"] = None
+            state["last_advice_types"] = []
+            self._save_turn(request, state, general.answer)
+            metrics["total_ms"] = self._elapsed_ms(started_at)
+            yield self._sse("delta", {"text": general.answer})
+            yield self._sse_done(state, [], False, None, metrics)
+            return
+
         parsed = self.parser.parse(request.message, state)
         self._merge_parsed_state(state, parsed)
         metrics["parse_ms"] = self._elapsed_ms(stage_at)
@@ -132,6 +190,30 @@ class ChatService:
             yield self._sse_done(state, [], False, None, metrics)
             return
 
+        if parsed.intent == "constitution_explain" and state.get("constitution"):
+            stage_at = perf_counter()
+            retrieved = self.identifier.retrieve_explanation(request.message, state["constitution"])
+            metrics["retrieve_ms"] = self._elapsed_ms(stage_at)
+            answer = self.generator.generate(request.message, state, retrieved, identification)
+            state["last_intent"] = parsed.intent
+            state["last_advice_type"] = None
+            state["last_advice_types"] = []
+            self._save_turn(request, state, answer)
+            metrics["total_ms"] = self._elapsed_ms(started_at)
+            yield self._sse("delta", {"text": answer})
+            yield self._sse_done(state, retrieved, False, None, metrics)
+            return
+
+        if parsed.intent == "irrelevant":
+            state["last_intent"] = parsed.intent
+            state["last_advice_type"] = None
+            state["last_advice_types"] = []
+            self._save_turn(request, state, UNSUPPORTED_ANSWER)
+            metrics["total_ms"] = self._elapsed_ms(started_at)
+            yield self._sse("delta", {"text": UNSUPPORTED_ANSWER})
+            yield self._sse_done(state, [], False, None, metrics)
+            return
+
         clarification = self.clarifier.decide(parsed, state)
         if clarification:
             state["last_intent"] = parsed.intent
@@ -150,6 +232,7 @@ class ChatService:
             return
 
         advice_type = self._advice_type(parsed)
+        advice_types = self._advice_types(parsed)
 
         stage_at = perf_counter()
         yield self._sse("status", {"text": "正在检索相关饮食和调理资料..."})
@@ -159,6 +242,7 @@ class ChatService:
             area=state.get("area") or self.settings.default_area,
             season=state.get("season"),
             advice_type=advice_type,
+            advice_types=advice_types,
         )
         metrics["retrieve_ms"] = self._elapsed_ms(stage_at)
         metrics["retrieved_chunks"] = len(retrieved)
@@ -237,6 +321,7 @@ class ChatService:
         answer = "".join(answer_parts)
         state["last_intent"] = parsed.intent
         state["last_advice_type"] = advice_type
+        state["last_advice_types"] = advice_types
         self._save_turn(request, state, answer)
 
         metrics["total_ms"] = self._elapsed_ms(started_at)
@@ -252,6 +337,12 @@ class ChatService:
         if parsed.intent == "diet_advice":
             return DIET_PRINCIPLE
         return parsed.advice_type
+
+    @staticmethod
+    def _advice_types(parsed) -> list[str]:
+        if parsed.intent == "diet_advice":
+            return []
+        return list(dict.fromkeys(parsed.advice_types or ([parsed.advice_type] if parsed.advice_type else [])))
 
     @staticmethod
     def _retrieved_chunks(retrieved: list[dict]) -> list[RetrievedChunk]:

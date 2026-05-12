@@ -67,6 +67,7 @@ class SessionStore:
             season=state.get("season"),
             last_intent=state.get("last_intent"),
             last_advice_type=state.get("last_advice_type"),
+            last_advice_types=state.get("last_advice_types") or [],
         )
 
     def cleanup_expired(self) -> int:
@@ -136,5 +137,6 @@ class SessionStore:
             "season": None,
             "last_intent": None,
             "last_advice_type": None,
+            "last_advice_types": [],
             "history": [],
         }

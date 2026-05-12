@@ -60,13 +60,19 @@ def normalize_term(value: str | None) -> tuple[str | None, str | None]:
     return text, SOLAR_TERM_TO_SEASON.get(text)
 
 
-def detect_advice_type(text: str) -> str | None:
+def detect_advice_types(text: str) -> list[str]:
+    matched: list[str] = []
     for category, keywords in CATEGORY_KEYWORDS.items():
         if category == "diet_principle":
             continue
         if category in text or any(keyword in text for keyword in keywords):
-            return category
-    return None
+            matched.append(category)
+    return matched
+
+
+def detect_advice_type(text: str) -> str | None:
+    advice_types = detect_advice_types(text)
+    return advice_types[0] if advice_types else None
 
 
 def current_season(month: int) -> str:

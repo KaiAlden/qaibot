@@ -19,23 +19,37 @@ class KnowledgeRetriever:
         area: str | None,
         season: str | None,
         advice_type: str | None,
+        advice_types: list[str] | None = None,
     ) -> list[dict]:
         results: list[dict] = []
+        suggestion_types = list(dict.fromkeys(advice_types or []))
+        if not suggestion_types and advice_type and advice_type != DIET_PRINCIPLE:
+            suggestion_types = [advice_type]
 
-        if advice_type is None or advice_type == DIET_PRINCIPLE:
+        if not suggestion_types and (advice_type is None or advice_type == DIET_PRINCIPLE):
             results.extend(
                 self._search_with_fallback(
                     query=query,
                     base_filters={"type": "diet_principle", "constitution": constitution},
                     area=area,
                     season=season,
-                    limit=2,
+                    limit=self.settings.diet_principle_top_k,
                 )
             )
 
-        if advice_type and advice_type != DIET_PRINCIPLE:
-            filters = {"type": "suggestion", "constitution": constitution, "suggestion_name": advice_type}
-            results.extend(self._search_with_fallback(query, filters, area, season, limit=3))
+        if suggestion_types:
+            per_type_limit = (
+                self.settings.suggestion_per_type_top_k
+                if len(suggestion_types) > 1
+                else self.settings.suggestion_top_k
+            )
+            for suggestion_type in suggestion_types:
+                filters = {
+                    "type": "suggestion",
+                    "constitution": constitution,
+                    "suggestion_name": suggestion_type,
+                }
+                results.extend(self._search_with_fallback(query, filters, area, season, limit=per_type_limit))
         elif advice_type is None:
             results.extend(
                 self._search_with_fallback(
@@ -43,7 +57,7 @@ class KnowledgeRetriever:
                     base_filters={"type": "suggestion", "constitution": constitution},
                     area=area,
                     season=season,
-                    limit=4,
+                    limit=self.settings.general_suggestion_top_k,
                 )
             )
 
