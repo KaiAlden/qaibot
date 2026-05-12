@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from openai import OpenAI
 
 from app.config import Settings
+from app.rag.thinking import StreamPart, ThinkingStreamParser, parse_model_output, summarize_thinking
 
 
 class AnswerGenerator:
@@ -26,10 +27,23 @@ class AnswerGenerator:
         prompt = self._build_prompt(message, session, retrieved, identification)
         response = self.llm.chat.completions.create(
             model=self.settings.llm_model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=self._messages(prompt),
             temperature=self.settings.llm_temperature,
         )
-        return response.choices[0].message.content or ""
+        message_obj = response.choices[0].message
+        content = message_obj.content or ""
+        reasoning = getattr(message_obj, "reasoning_content", None) or ""
+        parsed = parse_model_output(
+            content,
+            self.settings.thinking_start_tag,
+            self.settings.thinking_end_tag,
+            self.settings.thinking_answer_start_tag,
+            self.settings.thinking_answer_end_tag,
+        )
+        if reasoning and not parsed.thinking:
+            parsed_answer = parsed.answer or content.strip()
+            return parsed_answer
+        return parsed.answer if (parsed.answer or parsed.thinking) else content.strip()
 
     def generate_stream(
         self,
@@ -37,20 +51,32 @@ class AnswerGenerator:
         session: dict,
         retrieved: list[dict],
         identification: dict | None = None,
-    ) -> Iterator[str]:
+    ) -> Iterator[StreamPart]:
         prompt = self._build_prompt(message, session, retrieved, identification)
         response = self.llm.chat.completions.create(
             model=self.settings.llm_model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=self._messages(prompt),
             temperature=self.settings.llm_temperature,
             stream=True,
+        )
+        parser = ThinkingStreamParser(
+            self.settings.thinking_start_tag,
+            self.settings.thinking_end_tag,
+            self.settings.thinking_answer_start_tag,
+            self.settings.thinking_answer_end_tag,
+            self.settings.thinking_stream_buffer_chars,
         )
         for chunk in response:
             if not chunk.choices:
                 continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+            delta_obj = chunk.choices[0].delta
+            reasoning_delta = getattr(delta_obj, "reasoning_content", None)
+            if reasoning_delta:
+                yield StreamPart("thinking", reasoning_delta)
+            content_delta = delta_obj.content
+            if content_delta:
+                yield from parser.feed(content_delta)
+        yield from parser.finish()
 
     def prompt_size(
         self,
@@ -60,6 +86,30 @@ class AnswerGenerator:
         identification: dict | None = None,
     ) -> int:
         return len(self._build_prompt(message, session, retrieved, identification))
+
+    def _messages(self, prompt: str) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你必须使用中文回答。"
+                    "如果需要输出思考过程，只能输出简短中文思考摘要，并且必须完整放在 "
+                    f"{self.settings.thinking_start_tag} 和 {self.settings.thinking_end_tag} 之间。"
+                    "最终给用户看的正式回答必须完整放在 "
+                    f"{self.settings.thinking_answer_start_tag} 和 {self.settings.thinking_answer_end_tag} 之间。"
+                    "不要输出英文 Thought Process、Analyze the Request、Final Output、Final Answer 等标题。"
+                    "不要把思考过程混入正式回答。"
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+    def format_thinking(self, text: str) -> str:
+        if self.settings.thinking_display_mode == "raw":
+            return text
+        if self.settings.thinking_display_mode == "summary":
+            return summarize_thinking(text, self.settings.thinking_summary_max_chars)
+        return ""
 
     def _build_prompt(
         self,

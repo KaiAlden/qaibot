@@ -26,6 +26,11 @@ def _env_float(name: str, default: float) -> float:
     return default if value == "" else float(value)
 
 
+def _env_choice(name: str, default: str, choices: set[str]) -> str:
+    value = _env(name, default).strip().lower()
+    return value if value in choices else default
+
+
 def _normalize_qdrant_url(url: str) -> str:
     cleaned = url.strip().rstrip("/")
     if not cleaned:
@@ -61,6 +66,13 @@ class Settings:
     llm_temperature: float
     llm_request_timeout: float
     llm_first_token_timeout: float
+    thinking_display_mode: str
+    thinking_start_tag: str
+    thinking_end_tag: str
+    thinking_answer_start_tag: str
+    thinking_answer_end_tag: str
+    thinking_summary_max_chars: int
+    thinking_stream_buffer_chars: int
 
     embedding_provider: str
     embedding_api_key: str
@@ -106,6 +118,13 @@ def load_settings() -> Settings:
         llm_temperature=_env_float("LLM_TEMPERATURE", 0.2),
         llm_request_timeout=_env_float("LLM_REQUEST_TIMEOUT", 90.0),
         llm_first_token_timeout=_env_float("LLM_FIRST_TOKEN_TIMEOUT", 45.0),
+        thinking_display_mode=_env_choice("THINKING_DISPLAY_MODE", "summary", {"off", "raw", "summary"}),
+        thinking_start_tag=_env("THINKING_START_TAG", "<think>"),
+        thinking_end_tag=_env("THINKING_END_TAG", "</think>"),
+        thinking_answer_start_tag=_env("THINKING_ANSWER_START_TAG", "<answer>"),
+        thinking_answer_end_tag=_env("THINKING_ANSWER_END_TAG", "</answer>"),
+        thinking_summary_max_chars=_env_int("THINKING_SUMMARY_MAX_CHARS", 600),
+        thinking_stream_buffer_chars=_env_int("THINKING_STREAM_BUFFER_CHARS", 1200),
         embedding_provider=_env("EMBEDDING_PROVIDER", "openai"),
         embedding_api_key=_env("EMBEDDING_API_KEY") or _env("LLM_API_KEY"),
         embedding_base_url=_normalize_openai_base_url(_env("EMBEDDING_BASE_URL") or _env("LLM_BASE_URL")),

@@ -35,7 +35,6 @@ class SessionState(BaseModel):
     area: str | None = None
     season: str | None = None
     last_intent: str | None = None
-    last_advice_type: str | None = None
     last_advice_types: list[str] = Field(default_factory=list)
 
 

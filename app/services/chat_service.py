@@ -38,7 +38,6 @@ class ChatService:
         general = self.general_parser.parse(request.message)
         if general.answer:
             state["last_intent"] = general.intent
-            state["last_advice_type"] = None
             state["last_advice_types"] = []
             self._save_turn(request, state, general.answer)
             return ChatResponse(
@@ -75,7 +74,6 @@ class ChatService:
             retrieved = self.identifier.retrieve_explanation(request.message, state["constitution"])
             answer = self.generator.generate(request.message, state, retrieved, identification)
             state["last_intent"] = parsed.intent
-            state["last_advice_type"] = None
             state["last_advice_types"] = []
             self._save_turn(request, state, answer)
             return ChatResponse(
@@ -88,7 +86,6 @@ class ChatService:
 
         if parsed.intent == "irrelevant":
             state["last_intent"] = parsed.intent
-            state["last_advice_type"] = None
             state["last_advice_types"] = []
             self._save_turn(request, state, UNSUPPORTED_ANSWER)
             return ChatResponse(
@@ -135,7 +132,6 @@ class ChatService:
 
         answer = self.generator.generate(request.message, state, retrieved, identification)
         state["last_intent"] = parsed.intent
-        state["last_advice_type"] = advice_type
         state["last_advice_types"] = advice_types
         self._save_turn(request, state, answer)
 
@@ -149,7 +145,7 @@ class ChatService:
 
     def chat_stream(self, request: ChatRequest) -> Iterator[str]:
         started_at = perf_counter()
-        metrics: dict[str, int] = {}
+        metrics: dict[str, object] = {}
 
         stage_at = perf_counter()
         yield self._sse("status", {"text": "正在理解你的问题..."})
@@ -157,7 +153,6 @@ class ChatService:
         general = self.general_parser.parse(request.message)
         if general.answer:
             state["last_intent"] = general.intent
-            state["last_advice_type"] = None
             state["last_advice_types"] = []
             self._save_turn(request, state, general.answer)
             metrics["total_ms"] = self._elapsed_ms(started_at)
@@ -196,7 +191,6 @@ class ChatService:
             metrics["retrieve_ms"] = self._elapsed_ms(stage_at)
             answer = self.generator.generate(request.message, state, retrieved, identification)
             state["last_intent"] = parsed.intent
-            state["last_advice_type"] = None
             state["last_advice_types"] = []
             self._save_turn(request, state, answer)
             metrics["total_ms"] = self._elapsed_ms(started_at)
@@ -206,7 +200,6 @@ class ChatService:
 
         if parsed.intent == "irrelevant":
             state["last_intent"] = parsed.intent
-            state["last_advice_type"] = None
             state["last_advice_types"] = []
             self._save_turn(request, state, UNSUPPORTED_ANSWER)
             metrics["total_ms"] = self._elapsed_ms(started_at)
@@ -260,14 +253,16 @@ class ChatService:
         )
 
         answer_parts = []
+        thinking_parts = []
+        thinking_chars = 0
         token_queue: Queue = Queue()
         llm_started_at = perf_counter()
         first_token_seen = False
 
         def produce_tokens() -> None:
             try:
-                for delta in self.generator.generate_stream(request.message, state, retrieved, identification):
-                    token_queue.put(("delta", delta))
+                for part in self.generator.generate_stream(request.message, state, retrieved, identification):
+                    token_queue.put((part.kind, part.text))
                 token_queue.put(("done", None))
             except Exception as exc:  # noqa: BLE001
                 token_queue.put(("error", str(exc)))
@@ -305,12 +300,32 @@ class ChatService:
                 )
                 continue
 
-            if kind == "delta":
+            if kind in {"answer", "thinking", "thinking_done"}:
                 if not first_token_seen:
                     first_token_seen = True
                     metrics["llm_first_token_ms"] = self._elapsed_ms(llm_started_at)
-                answer_parts.append(payload)
-                yield self._sse("delta", {"text": payload})
+                if kind == "thinking":
+                    thinking_chars += len(payload)
+                    if self.settings.thinking_display_mode == "summary":
+                        thinking_parts.append(payload)
+                    else:
+                        thinking_text = self.generator.format_thinking(payload)
+                        if thinking_text:
+                            yield self._sse("thinking", {"text": thinking_text})
+                elif kind == "thinking_done":
+                    if self.settings.thinking_display_mode == "summary" and thinking_parts:
+                        thinking_text = self.generator.format_thinking("".join(thinking_parts))
+                        thinking_parts = []
+                        if thinking_text:
+                            yield self._sse("thinking", {"text": thinking_text})
+                else:
+                    if self.settings.thinking_display_mode == "summary" and thinking_parts:
+                        thinking_text = self.generator.format_thinking("".join(thinking_parts))
+                        thinking_parts = []
+                        if thinking_text:
+                            yield self._sse("thinking", {"text": thinking_text})
+                    answer_parts.append(payload)
+                    yield self._sse("delta", {"text": payload})
             elif kind == "done":
                 break
             elif kind == "error":
@@ -318,13 +333,17 @@ class ChatService:
                 return
 
         metrics["llm_total_ms"] = self._elapsed_ms(llm_started_at)
+        if self.settings.thinking_display_mode == "summary" and thinking_parts:
+            thinking_text = self.generator.format_thinking("".join(thinking_parts))
+            if thinking_text:
+                yield self._sse("thinking", {"text": thinking_text})
         answer = "".join(answer_parts)
         state["last_intent"] = parsed.intent
-        state["last_advice_type"] = advice_type
         state["last_advice_types"] = advice_types
         self._save_turn(request, state, answer)
 
         metrics["total_ms"] = self._elapsed_ms(started_at)
+        metrics["thinking_chars"] = thinking_chars
         yield self._sse_done(state, retrieved, False, None, metrics)
 
     def _save_turn(self, request: ChatRequest, state: dict, answer: str) -> None:
@@ -362,7 +381,7 @@ class ChatService:
         retrieved: list[dict],
         need_clarification: bool,
         clarification_question: str | None,
-        metrics: dict[str, int] | None = None,
+        metrics: dict[str, object] | None = None,
     ) -> str:
         return self._sse(
             "done",
@@ -379,7 +398,10 @@ class ChatService:
                     }
                     for item in retrieved
                 ],
-                "metrics": metrics or {},
+                "metrics": {
+                    **(metrics or {}),
+                    "thinking_mode": self.settings.thinking_display_mode,
+                },
             },
         )
 
