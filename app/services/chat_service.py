@@ -5,8 +5,10 @@ import json
 from queue import Empty, Queue
 from threading import Thread
 from time import perf_counter
+from typing import Any
 
 from app.config import Settings
+from app.domain import normalize_area, normalize_term
 from app.nlp.clarification import ClarificationDecider
 from app.nlp.general_intent import UNSUPPORTED_ANSWER, GeneralIntentParser
 from app.nlp.intent_parser import IntentParser
@@ -35,6 +37,7 @@ class ChatService:
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         state = self.sessions.get(request.user_id, request.conversation_id)
+        runtime_context = self._runtime_context(request)
         general = self.general_parser.parse(request.message)
         if general.answer:
             state["last_intent"] = general.intent
@@ -50,6 +53,8 @@ class ChatService:
 
         parsed = self.parser.parse(request.message, state)
         self._merge_parsed_state(state, parsed)
+        effective_state = self._effective_state(state, runtime_context)
+        self._apply_runtime_context_to_parsed(parsed, effective_state)
 
         identification = None
         if parsed.intent in {"identify_constitution", "mixed"} or (parsed.symptoms and not state.get("constitution")):
@@ -57,6 +62,7 @@ class ChatService:
             if identification.get("primary_constitution"):
                 state["constitution"] = identification["primary_constitution"]
                 state["secondary_constitution"] = identification.get("secondary_constitution")
+                effective_state = self._effective_state(state, runtime_context)
 
         if parsed.intent == "identify_constitution" and state.get("constitution"):
             answer = self._identification_answer(identification or {}, state)
@@ -71,8 +77,8 @@ class ChatService:
             )
 
         if parsed.intent == "constitution_explain" and state.get("constitution"):
-            retrieved = self.identifier.retrieve_explanation(request.message, state["constitution"])
-            answer = self.generator.generate(request.message, state, retrieved, identification)
+            retrieved = self.identifier.retrieve_explanation(request.message, effective_state["constitution"])
+            answer = self.generator.generate(request.message, effective_state, retrieved, identification)
             state["last_intent"] = parsed.intent
             state["last_advice_types"] = []
             self._save_turn(request, state, answer)
@@ -96,7 +102,7 @@ class ChatService:
                 retrieved_chunks=[],
             )
 
-        clarification = self.clarifier.decide(parsed, state)
+        clarification = self.clarifier.decide(parsed, effective_state)
         if clarification:
             state["last_intent"] = parsed.intent
             self._save_turn(request, state, clarification)
@@ -108,7 +114,7 @@ class ChatService:
                 retrieved_chunks=[],
             )
 
-        if not state.get("constitution"):
+        if not effective_state.get("constitution"):
             question = "目前还无法判断体质。请补充几个主要症状，比如怕冷怕热、出汗、口干口苦、睡眠、消化和大便情况。"
             self._save_turn(request, state, question)
             return ChatResponse(
@@ -123,14 +129,14 @@ class ChatService:
         advice_types = self._advice_types(parsed)
         retrieved = self.retriever.retrieve(
             query=request.message,
-            constitution=state["constitution"],
-            area=state.get("area") or self.settings.default_area,
-            season=state.get("season"),
+            constitution=effective_state["constitution"],
+            area=effective_state.get("area") or self.settings.default_area,
+            season=effective_state.get("season"),
             advice_type=advice_type,
             advice_types=advice_types,
         )
 
-        answer = self.generator.generate(request.message, state, retrieved, identification)
+        answer = self.generator.generate(request.message, effective_state, retrieved, identification)
         state["last_intent"] = parsed.intent
         state["last_advice_types"] = advice_types
         self._save_turn(request, state, answer)
@@ -150,6 +156,7 @@ class ChatService:
         stage_at = perf_counter()
         yield self._sse("status", {"text": "正在理解你的问题..."})
         state = self.sessions.get(request.user_id, request.conversation_id)
+        runtime_context = self._runtime_context(request)
         general = self.general_parser.parse(request.message)
         if general.answer:
             state["last_intent"] = general.intent
@@ -162,6 +169,8 @@ class ChatService:
 
         parsed = self.parser.parse(request.message, state)
         self._merge_parsed_state(state, parsed)
+        effective_state = self._effective_state(state, runtime_context)
+        self._apply_runtime_context_to_parsed(parsed, effective_state)
         metrics["parse_ms"] = self._elapsed_ms(stage_at)
 
         identification = None
@@ -173,6 +182,7 @@ class ChatService:
             if identification.get("primary_constitution"):
                 state["constitution"] = identification["primary_constitution"]
                 state["secondary_constitution"] = identification.get("secondary_constitution")
+                effective_state = self._effective_state(state, runtime_context)
         else:
             metrics["identify_ms"] = 0
 
@@ -187,9 +197,9 @@ class ChatService:
 
         if parsed.intent == "constitution_explain" and state.get("constitution"):
             stage_at = perf_counter()
-            retrieved = self.identifier.retrieve_explanation(request.message, state["constitution"])
+            retrieved = self.identifier.retrieve_explanation(request.message, effective_state["constitution"])
             metrics["retrieve_ms"] = self._elapsed_ms(stage_at)
-            answer = self.generator.generate(request.message, state, retrieved, identification)
+            answer = self.generator.generate(request.message, effective_state, retrieved, identification)
             state["last_intent"] = parsed.intent
             state["last_advice_types"] = []
             self._save_turn(request, state, answer)
@@ -207,7 +217,7 @@ class ChatService:
             yield self._sse_done(state, [], False, None, metrics)
             return
 
-        clarification = self.clarifier.decide(parsed, state)
+        clarification = self.clarifier.decide(parsed, effective_state)
         if clarification:
             state["last_intent"] = parsed.intent
             self._save_turn(request, state, clarification)
@@ -216,7 +226,7 @@ class ChatService:
             yield self._sse_done(state, [], True, clarification, metrics)
             return
 
-        if not state.get("constitution"):
+        if not effective_state.get("constitution"):
             question = "目前还无法判断体质。请补充几个主要症状，比如怕冷怕热、出汗、口干口苦、睡眠、消化和大便情况。"
             self._save_turn(request, state, question)
             metrics["total_ms"] = self._elapsed_ms(started_at)
@@ -231,15 +241,15 @@ class ChatService:
         yield self._sse("status", {"text": "正在检索相关饮食和调理资料..."})
         retrieved = self.retriever.retrieve(
             query=request.message,
-            constitution=state["constitution"],
-            area=state.get("area") or self.settings.default_area,
-            season=state.get("season"),
+            constitution=effective_state["constitution"],
+            area=effective_state.get("area") or self.settings.default_area,
+            season=effective_state.get("season"),
             advice_type=advice_type,
             advice_types=advice_types,
         )
         metrics["retrieve_ms"] = self._elapsed_ms(stage_at)
         metrics["retrieved_chunks"] = len(retrieved)
-        metrics["prompt_chars"] = self.generator.prompt_size(request.message, state, retrieved, identification)
+        metrics["prompt_chars"] = self.generator.prompt_size(request.message, effective_state, retrieved, identification)
 
         yield self._sse(
             "status",
@@ -261,7 +271,7 @@ class ChatService:
 
         def produce_tokens() -> None:
             try:
-                for part in self.generator.generate_stream(request.message, state, retrieved, identification):
+                for part in self.generator.generate_stream(request.message, effective_state, retrieved, identification):
                     token_queue.put((part.kind, part.text))
                 token_queue.put(("done", None))
             except Exception as exc:  # noqa: BLE001
@@ -417,6 +427,53 @@ class ChatService:
     @staticmethod
     def _elapsed_ms(started_at: float) -> int:
         return int((perf_counter() - started_at) * 1000)
+
+    def _runtime_context(self, request: ChatRequest) -> dict[str, Any]:
+        context = request.runtime_context
+        if not context:
+            return {}
+
+        data = {
+            key: value
+            for key, value in context.model_dump().items()
+            if value not in (None, "", [], {})
+        }
+        if data.get("time") and not data.get("current_time"):
+            data["current_time"] = data["time"]
+
+        location = data.get("location")
+        if location:
+            area = normalize_area(str(location))
+            if area:
+                data["area"] = area
+
+        solar_term = data.get("solar_term")
+        if solar_term:
+            term, season = normalize_term(str(solar_term))
+            if term:
+                data["solar_term"] = term
+            if season:
+                data["season"] = season
+        return data
+
+    @staticmethod
+    def _effective_state(state: dict, runtime_context: dict[str, Any]) -> dict:
+        effective = {**state}
+        if runtime_context:
+            effective["_runtime_context"] = runtime_context
+            if runtime_context.get("area"):
+                effective["area"] = runtime_context["area"]
+            if runtime_context.get("season"):
+                effective["season"] = runtime_context["season"]
+        return effective
+
+    @staticmethod
+    def _apply_runtime_context_to_parsed(parsed, effective_state: dict) -> None:
+        runtime_context = effective_state.get("_runtime_context") or {}
+        if runtime_context.get("area"):
+            parsed.area = effective_state.get("area")
+        if runtime_context.get("season"):
+            parsed.season = effective_state.get("season")
 
     def _merge_parsed_state(self, state: dict, parsed) -> None:
         if parsed.constitution:

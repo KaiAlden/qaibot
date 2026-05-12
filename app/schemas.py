@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 Intent = Literal[
@@ -16,10 +16,20 @@ Intent = Literal[
 ]
 
 
+class RuntimeContext(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    location: str | None = None
+    current_time: str | None = None
+    time: str | None = None
+    solar_term: str | None = None
+
+
 class ChatRequest(BaseModel):
     user_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
+    runtime_context: RuntimeContext | None = None
 
 
 class RetrievedChunk(BaseModel):

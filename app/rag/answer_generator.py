@@ -119,6 +119,9 @@ class AnswerGenerator:
         identification: dict | None = None,
     ) -> str:
         context = self._context_text(retrieved)
+        runtime_context_text = self._runtime_context_text(session.get("_runtime_context") or {})
+        if runtime_context_text:
+            context = f"{runtime_context_text}\n\n---\n\n{context}"
         history_text = self._history_text(session.get("history", []))
         fallback_note = self._fallback_note(retrieved)
         identify_note = ""
@@ -170,6 +173,35 @@ class AnswerGenerator:
             if content:
                 chunks.append(content)
         return "\n\n---\n\n".join(chunks) if chunks else "无"
+
+    @staticmethod
+    def _runtime_context_text(runtime_context: dict) -> str:
+        if not runtime_context:
+            return ""
+
+        labels = {
+            "location": "当前地点",
+            "current_time": "当前时间",
+            "time": "当前时间",
+            "solar_term": "当前节气",
+            "area": "检索地区",
+            "season": "检索季节",
+        }
+        lines = []
+        for key in ("location", "current_time", "solar_term", "area", "season"):
+            value = runtime_context.get(key)
+            if value:
+                lines.append(f"- {labels[key]}：{value}")
+
+        extra_lines = []
+        for key, value in runtime_context.items():
+            if key not in labels and value not in (None, "", [], {}):
+                extra_lines.append(f"- {key}：{value}")
+        lines.extend(extra_lines)
+
+        if not lines:
+            return ""
+        return "当前运行时上下文（请结合这些信息生成本轮回答）：\n" + "\n".join(lines)
 
     @staticmethod
     def _fallback_note(retrieved: list[dict]) -> str:
