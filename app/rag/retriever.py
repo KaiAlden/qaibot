@@ -15,7 +15,7 @@ class KnowledgeRetriever:
     def retrieve(
         self,
         query: str,
-        constitution: str,
+        constitution: str | None,
         area: str | None,
         season: str | None,
         advice_type: str | None,

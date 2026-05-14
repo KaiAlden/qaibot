@@ -65,6 +65,7 @@ class Settings:
     llm_model: str
     llm_temperature: float
     llm_request_timeout: float
+    router_llm_timeout: float
     llm_first_token_timeout: float
     thinking_display_mode: str
     thinking_start_tag: str
@@ -117,6 +118,7 @@ def load_settings() -> Settings:
         llm_model=_env("LLM_MODEL", "gpt-4o-mini"),
         llm_temperature=_env_float("LLM_TEMPERATURE", 0.2),
         llm_request_timeout=_env_float("LLM_REQUEST_TIMEOUT", 90.0),
+        router_llm_timeout=_env_float("ROUTER_LLM_TIMEOUT", 6.0),
         llm_first_token_timeout=_env_float("LLM_FIRST_TOKEN_TIMEOUT", 45.0),
         thinking_display_mode=_env_choice("THINKING_DISPLAY_MODE", "summary", {"off", "raw", "summary"}),
         thinking_start_tag=_env("THINKING_START_TAG", "<think>"),

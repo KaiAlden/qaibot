@@ -10,10 +10,14 @@ Intent = Literal[
     "constitution_explain",
     "diet_advice",
     "conditioning_advice",
+    "seasonal_health_advice",
     "mixed",
     "general_followup",
     "irrelevant",
 ]
+
+Route = Literal["tcm_health", "weather", "music", "web_search", "smalltalk", "unsupported"]
+ToolStatus = Literal["pending", "success", "failed", "not_configured"]
 
 
 class RuntimeContext(BaseModel):
@@ -39,6 +43,13 @@ class RetrievedChunk(BaseModel):
     fallback_level: str | None = None
 
 
+class ToolCall(BaseModel):
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    status: ToolStatus
+    result: dict[str, Any] | str | None = None
+
+
 class SessionState(BaseModel):
     constitution: str | None = None
     secondary_constitution: str | None = None
@@ -54,6 +65,8 @@ class ChatResponse(BaseModel):
     clarification_question: str | None
     session_state: SessionState
     retrieved_chunks: list[RetrievedChunk] = Field(default_factory=list)
+    route: Route | None = None
+    tool_call: ToolCall | None = None
 
 
 class ParsedIntent(BaseModel):
@@ -65,6 +78,36 @@ class ParsedIntent(BaseModel):
     advice_type: str | None = None
     advice_types: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class RoutedTask(BaseModel):
+    route: Route
+    intent: Intent = "irrelevant"
+    symptoms: list[str] = Field(default_factory=list)
+    constitution: str | None = None
+    area: str | None = None
+    season: str | None = None
+    advice_types: list[str] = Field(default_factory=list)
+    tool_name: str | None = None
+    tool_args: dict[str, Any] = Field(default_factory=dict)
+    need_clarification: bool = False
+    clarification_question: str | None = None
+    confidence: Literal["high", "medium", "low"] = "low"
+    reason: str | None = None
+    response_text: str | None = None
+
+    def to_parsed_intent(self) -> ParsedIntent:
+        advice_types = list(dict.fromkeys(self.advice_types))
+        return ParsedIntent(
+            intent=self.intent,
+            symptoms=self.symptoms,
+            constitution=self.constitution,
+            area=self.area,
+            season=self.season,
+            advice_type=advice_types[0] if advice_types else None,
+            advice_types=advice_types,
+            raw=self.model_dump(),
+        )
 
 
 class KnowledgeChunk(BaseModel):

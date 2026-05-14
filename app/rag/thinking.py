@@ -106,11 +106,14 @@ class ThinkingStreamParser:
         if not text:
             return []
         if self._state == "answer":
-            return [StreamPart("answer", self._strip_answer_tags(text))]
+            answer = self._strip_answer_tags(text)
+            return [StreamPart("answer", answer)] if answer else []
 
         self._buffer += text
         if self._state == "thinking":
             return self._drain_thinking()
+        if self._state == "await_answer":
+            return self._drain_await_answer()
         return self._drain_unknown()
 
     def finish(self) -> list[StreamPart]:
@@ -121,6 +124,10 @@ class ThinkingStreamParser:
 
         if self._state == "thinking":
             return [StreamPart("thinking", buffer), StreamPart("thinking_done", "")]
+        if self._state == "await_answer":
+            self._state = "answer"
+            answer = self._strip_answer_tags(buffer)
+            return [StreamPart("answer", answer)] if answer else []
         if self._state == "answer":
             return [StreamPart("answer", self._strip_answer_tags(buffer))]
 
@@ -159,12 +166,10 @@ class ThinkingStreamParser:
         if end >= 0:
             thinking = self._buffer[:end]
             rest = self._buffer[end + len(self.end_tag) :]
-            self._buffer = ""
-            self._state = "answer"
+            self._buffer = rest
+            self._state = "await_answer"
             parts = [StreamPart("thinking", thinking), StreamPart("thinking_done", "")]
-            answer = self._strip_answer_tags(rest)
-            if answer:
-                parts.append(StreamPart("answer", answer))
+            parts.extend(self._drain_await_answer())
             return parts
 
         if answer_start >= 0:
@@ -195,41 +200,25 @@ class ThinkingStreamParser:
             self._state = "thinking"
             return self._drain_thinking()
 
-        if len(self._buffer) > self.buffer_chars:
-            answer = self._buffer
-            self._buffer = ""
-            self._state = "answer"
-            return [StreamPart("answer", answer)]
-
         return []
 
     def _drain_thinking(self) -> list[StreamPart]:
         lower_buffer = self._buffer.lower()
         end = lower_buffer.find(self.end_tag.lower())
-        answer_start = lower_buffer.find(self.answer_start_tag.lower())
-        marker = _find_answer_marker(self._buffer)
 
         split_at = None
         split_len = 0
         if end >= 0:
             split_at = end
             split_len = len(self.end_tag)
-        elif answer_start >= 0:
-            split_at = answer_start
-            split_len = len(self.answer_start_tag)
-        elif marker:
-            split_at = marker.start()
-            split_len = marker.end() - marker.start()
 
         if split_at is not None:
             thinking = self._buffer[:split_at]
             rest = self._buffer[split_at + split_len :]
-            self._buffer = ""
-            self._state = "answer"
+            self._buffer = rest
+            self._state = "await_answer"
             parts = [StreamPart("thinking", thinking), StreamPart("thinking_done", "")]
-            answer = self._strip_answer_tags(rest)
-            if answer:
-                parts.append(StreamPart("answer", answer))
+            parts.extend(self._drain_await_answer())
             return parts
 
         keep = max(len(self.end_tag), len(self.answer_start_tag), 32)
@@ -238,6 +227,39 @@ class ThinkingStreamParser:
         emit = self._buffer[:-keep]
         self._buffer = self._buffer[-keep:]
         return [StreamPart("thinking", emit)]
+
+    def _drain_await_answer(self) -> list[StreamPart]:
+        lower_buffer = self._buffer.lower()
+        answer_start = lower_buffer.find(self.answer_start_tag.lower())
+        answer_end = lower_buffer.find(self.answer_end_tag.lower())
+
+        if answer_start >= 0:
+            answer = self._buffer[answer_start + len(self.answer_start_tag) :]
+            self._buffer = ""
+            self._state = "answer"
+            answer = self._strip_answer_tags(answer)
+            return [StreamPart("answer", answer)] if answer else []
+
+        if answer_end >= 0:
+            answer = self._strip_answer_tags(self._buffer)
+            self._buffer = ""
+            self._state = "answer"
+            return [StreamPart("answer", answer)] if answer else []
+
+        if self._is_partial_tag_prefix(self._buffer):
+            return []
+
+        stripped = self._buffer.lstrip()
+        if not stripped:
+            return []
+        if stripped.startswith("<"):
+            keep = max(len(self.answer_start_tag), len(self.answer_end_tag), 16)
+            if len(stripped) < keep:
+                return []
+
+        self._buffer = ""
+        self._state = "answer"
+        return [StreamPart("answer", self._strip_answer_tags(stripped))]
 
     def _strip_answer_tags(self, text: str) -> str:
         lower_text = text.lower()
@@ -249,6 +271,19 @@ class ThinkingStreamParser:
         if end >= 0:
             text = text[:end] + text[end + len(self.answer_end_tag) :]
         return text
+
+    def _is_partial_tag_prefix(self, text: str) -> bool:
+        stripped = text.lstrip()
+        if not stripped:
+            return True
+        candidates = [
+            self.start_tag.lower(),
+            self.end_tag.lower(),
+            self.answer_start_tag.lower(),
+            self.answer_end_tag.lower(),
+        ]
+        lower = stripped.lower()
+        return any(candidate.startswith(lower) for candidate in candidates)
 
 
 def summarize_thinking(text: str, max_chars: int) -> str:
@@ -287,11 +322,24 @@ def _looks_like_thinking(text: str) -> bool:
     if _THINKING_MARKER_RE.search(sample[:400]):
         return True
     lower_sample = sample[:700].lower()
+    thinking_prefixes = (
+        "用户询问",
+        "用户问题",
+        "当前体质",
+        "当前环境",
+        "检索资料",
+        "参考资料",
+        "思考步骤",
+        "分析步骤",
+        "回答思路",
+        "需要说明",
+    )
     return (
         "analyze the request" in lower_sample
         or "retrieve knowledge" in lower_sample
         or "structure the response" in lower_sample
         or "self-correction" in lower_sample
+        or any(prefix in sample[:700] for prefix in thinking_prefixes)
     )
 
 

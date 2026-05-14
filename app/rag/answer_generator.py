@@ -12,7 +12,7 @@ class AnswerGenerator:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.llm = OpenAI(
-            api_key=settings.llm_api_key,
+            api_key=settings.llm_api_key or "EMPTY",
             base_url=settings.llm_base_url or None,
             timeout=settings.llm_request_timeout,
         )
@@ -157,7 +157,7 @@ class AnswerGenerator:
 {fallback_note}
 
 请基于检索资料回答。要求：
-1. 回答具体、可操作，不编造资料中没有的食材或调理法。
+1. 回答具体、可操作，结合当地的天气、节气等情况输出个性化的养生建议，不编造资料中没有的食材或调理法。
 2. 如果使用了季节或地区降级资料，要自然说明“未找到完全匹配资料，参考了更宽泛条件”。
 3. 涉及药浴、穴位、明显不适或长期症状时，提醒咨询专业医师。
 4. 不要把自己称为医生，不做疾病诊断。

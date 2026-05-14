@@ -12,12 +12,14 @@ from app.domain import normalize_area, normalize_term
 from app.nlp.clarification import ClarificationDecider
 from app.nlp.general_intent import UNSUPPORTED_ANSWER, GeneralIntentParser
 from app.nlp.intent_parser import IntentParser
+from app.nlp.task_router import TaskRouter
 from app.rag.answer_generator import AnswerGenerator
 from app.rag.constitution_identifier import ConstitutionIdentifier
 from app.rag.qdrant_store import QdrantStore
 from app.rag.retriever import KnowledgeRetriever
-from app.schemas import ChatRequest, ChatResponse, RetrievedChunk
+from app.schemas import ChatRequest, ChatResponse, RetrievedChunk, RoutedTask, ToolCall
 from app.session_store import SessionStore
+from app.tools import ToolExecutor
 
 
 DIET_PRINCIPLE = "季节饮食原则"
@@ -30,16 +32,18 @@ class ChatService:
         self.sessions = SessionStore(settings)
         self.general_parser = GeneralIntentParser()
         self.parser = IntentParser()
+        self.router = TaskRouter(settings)
         self.clarifier = ClarificationDecider()
         self.identifier = ConstitutionIdentifier(settings, self.store)
         self.retriever = KnowledgeRetriever(settings, self.store)
         self.generator = AnswerGenerator(settings)
+        self.tools = ToolExecutor()
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         state = self.sessions.get(request.user_id, request.conversation_id)
         runtime_context = self._runtime_context(request)
         general = self.general_parser.parse(request.message)
-        if general.answer:
+        if general.answer and general.intent != "external_realtime":
             state["last_intent"] = general.intent
             state["last_advice_types"] = []
             self._save_turn(request, state, general.answer)
@@ -49,9 +53,15 @@ class ChatService:
                 clarification_question=None,
                 session_state=self.sessions.to_public_state(state),
                 retrieved_chunks=[],
+                route=self._general_route(general.answer),
             )
 
-        parsed = self.parser.parse(request.message, state)
+        routed = self.router.route(request.message, state, runtime_context)
+        tool_response = self._tool_response(request, state, routed)
+        if tool_response:
+            return tool_response
+
+        parsed = self._parsed_from_route_or_rules(routed, request.message, state)
         self._merge_parsed_state(state, parsed)
         effective_state = self._effective_state(state, runtime_context)
         self._apply_runtime_context_to_parsed(parsed, effective_state)
@@ -74,6 +84,7 @@ class ChatService:
                 clarification_question=None,
                 session_state=self.sessions.to_public_state(state),
                 retrieved_chunks=[],
+                route="tcm_health",
             )
 
         if parsed.intent == "constitution_explain" and state.get("constitution"):
@@ -88,6 +99,7 @@ class ChatService:
                 clarification_question=None,
                 session_state=self.sessions.to_public_state(state),
                 retrieved_chunks=self._retrieved_chunks(retrieved),
+                route="tcm_health",
             )
 
         if parsed.intent == "irrelevant":
@@ -100,6 +112,19 @@ class ChatService:
                 clarification_question=None,
                 session_state=self.sessions.to_public_state(state),
                 retrieved_chunks=[],
+                route="unsupported",
+            )
+
+        if routed.need_clarification and routed.clarification_question:
+            state["last_intent"] = parsed.intent
+            self._save_turn(request, state, routed.clarification_question)
+            return ChatResponse(
+                answer=routed.clarification_question,
+                need_clarification=True,
+                clarification_question=routed.clarification_question,
+                session_state=self.sessions.to_public_state(state),
+                retrieved_chunks=[],
+                route=routed.route,
             )
 
         clarification = self.clarifier.decide(parsed, effective_state)
@@ -112,9 +137,10 @@ class ChatService:
                 clarification_question=clarification,
                 session_state=self.sessions.to_public_state(state),
                 retrieved_chunks=[],
+                route="tcm_health",
             )
 
-        if not effective_state.get("constitution"):
+        if not effective_state.get("constitution") and parsed.intent == "identify_constitution":
             question = "目前还无法判断体质。请补充几个主要症状，比如怕冷怕热、出汗、口干口苦、睡眠、消化和大便情况。"
             self._save_turn(request, state, question)
             return ChatResponse(
@@ -123,13 +149,14 @@ class ChatService:
                 clarification_question=question,
                 session_state=self.sessions.to_public_state(state),
                 retrieved_chunks=[],
+                route="tcm_health",
             )
 
         advice_type = self._advice_type(parsed)
         advice_types = self._advice_types(parsed)
         retrieved = self.retriever.retrieve(
             query=request.message,
-            constitution=effective_state["constitution"],
+            constitution=effective_state.get("constitution"),
             area=effective_state.get("area") or self.settings.default_area,
             season=effective_state.get("season"),
             advice_type=advice_type,
@@ -147,6 +174,7 @@ class ChatService:
             clarification_question=None,
             session_state=self.sessions.to_public_state(state),
             retrieved_chunks=self._retrieved_chunks(retrieved),
+            route="tcm_health",
         )
 
     def chat_stream(self, request: ChatRequest) -> Iterator[str]:
@@ -158,16 +186,32 @@ class ChatService:
         state = self.sessions.get(request.user_id, request.conversation_id)
         runtime_context = self._runtime_context(request)
         general = self.general_parser.parse(request.message)
-        if general.answer:
+        if general.answer and general.intent != "external_realtime":
             state["last_intent"] = general.intent
             state["last_advice_types"] = []
             self._save_turn(request, state, general.answer)
             metrics["total_ms"] = self._elapsed_ms(started_at)
             yield self._sse("delta", {"text": general.answer})
-            yield self._sse_done(state, [], False, None, metrics)
+            yield self._sse_done(state, [], False, None, metrics, route=self._general_route(general.answer))
             return
 
-        parsed = self.parser.parse(request.message, state)
+        routed = self.router.route(request.message, state, runtime_context)
+        tool_response = self._tool_response(request, state, routed)
+        if tool_response:
+            metrics["total_ms"] = self._elapsed_ms(started_at)
+            yield self._sse("delta", {"text": tool_response.answer})
+            yield self._sse_done(
+                state,
+                [],
+                tool_response.need_clarification,
+                tool_response.clarification_question,
+                metrics,
+                route=tool_response.route,
+                tool_call=tool_response.tool_call,
+            )
+            return
+
+        parsed = self._parsed_from_route_or_rules(routed, request.message, state)
         self._merge_parsed_state(state, parsed)
         effective_state = self._effective_state(state, runtime_context)
         self._apply_runtime_context_to_parsed(parsed, effective_state)
@@ -205,7 +249,7 @@ class ChatService:
             self._save_turn(request, state, answer)
             metrics["total_ms"] = self._elapsed_ms(started_at)
             yield self._sse("delta", {"text": answer})
-            yield self._sse_done(state, retrieved, False, None, metrics)
+            yield self._sse_done(state, retrieved, False, None, metrics, route="tcm_health")
             return
 
         if parsed.intent == "irrelevant":
@@ -214,7 +258,15 @@ class ChatService:
             self._save_turn(request, state, UNSUPPORTED_ANSWER)
             metrics["total_ms"] = self._elapsed_ms(started_at)
             yield self._sse("delta", {"text": UNSUPPORTED_ANSWER})
-            yield self._sse_done(state, [], False, None, metrics)
+            yield self._sse_done(state, [], False, None, metrics, route="unsupported")
+            return
+
+        if routed.need_clarification and routed.clarification_question:
+            state["last_intent"] = parsed.intent
+            self._save_turn(request, state, routed.clarification_question)
+            metrics["total_ms"] = self._elapsed_ms(started_at)
+            yield self._sse("delta", {"text": routed.clarification_question})
+            yield self._sse_done(state, [], True, routed.clarification_question, metrics, route=routed.route)
             return
 
         clarification = self.clarifier.decide(parsed, effective_state)
@@ -223,15 +275,15 @@ class ChatService:
             self._save_turn(request, state, clarification)
             metrics["total_ms"] = self._elapsed_ms(started_at)
             yield self._sse("delta", {"text": clarification})
-            yield self._sse_done(state, [], True, clarification, metrics)
+            yield self._sse_done(state, [], True, clarification, metrics, route="tcm_health")
             return
 
-        if not effective_state.get("constitution"):
+        if not effective_state.get("constitution") and parsed.intent == "identify_constitution":
             question = "目前还无法判断体质。请补充几个主要症状，比如怕冷怕热、出汗、口干口苦、睡眠、消化和大便情况。"
             self._save_turn(request, state, question)
             metrics["total_ms"] = self._elapsed_ms(started_at)
             yield self._sse("delta", {"text": question})
-            yield self._sse_done(state, [], True, question, metrics)
+            yield self._sse_done(state, [], True, question, metrics, route="tcm_health")
             return
 
         advice_type = self._advice_type(parsed)
@@ -241,7 +293,7 @@ class ChatService:
         yield self._sse("status", {"text": "正在检索相关饮食和调理资料..."})
         retrieved = self.retriever.retrieve(
             query=request.message,
-            constitution=effective_state["constitution"],
+            constitution=effective_state.get("constitution"),
             area=effective_state.get("area") or self.settings.default_area,
             season=effective_state.get("season"),
             advice_type=advice_type,
@@ -354,12 +406,67 @@ class ChatService:
 
         metrics["total_ms"] = self._elapsed_ms(started_at)
         metrics["thinking_chars"] = thinking_chars
-        yield self._sse_done(state, retrieved, False, None, metrics)
+        yield self._sse_done(state, retrieved, False, None, metrics, route="tcm_health")
 
     def _save_turn(self, request: ChatRequest, state: dict, answer: str) -> None:
         self.sessions.append_history(state, "user", request.message)
         self.sessions.append_history(state, "assistant", answer)
         self.sessions.save(request.user_id, request.conversation_id, state)
+
+    def _tool_response(self, request: ChatRequest, state: dict, routed: RoutedTask) -> ChatResponse | None:
+        if routed.route == "tcm_health":
+            return None
+
+        if routed.route in {"weather", "music", "web_search"}:
+            tool_name = routed.tool_name or routed.route
+            tool_args = routed.tool_args or {"query": request.message}
+            tool_call = self.tools.execute(tool_name, tool_args)
+            answer = str(tool_call.result or "外部工具接口已预留，当前尚未接入具体工具服务。")
+        elif routed.route == "smalltalk":
+            tool_call = None
+            answer = routed.response_text or "你好，我可以帮你做中医体质识别、体质特点说明、饮食建议和调理建议，也预留了天气、音乐和联网搜索工具接口。"
+        else:
+            tool_call = None
+            answer = UNSUPPORTED_ANSWER
+
+        state["last_intent"] = routed.route
+        state["last_advice_types"] = []
+        self._save_turn(request, state, answer)
+        return ChatResponse(
+            answer=answer,
+            need_clarification=False,
+            clarification_question=None,
+            session_state=self.sessions.to_public_state(state),
+            retrieved_chunks=[],
+            route=routed.route,
+            tool_call=tool_call,
+        )
+
+    def _parsed_from_route_or_rules(self, routed: RoutedTask, message: str, state: dict):
+        if routed.route == "tcm_health":
+            parsed = routed.to_parsed_intent()
+            legacy = self.parser.parse(message, state)
+            if parsed.intent in {"general_followup", "irrelevant"} and legacy.intent != "irrelevant":
+                parsed.intent = legacy.intent
+            if not parsed.symptoms:
+                parsed.symptoms = legacy.symptoms
+            if not parsed.constitution:
+                parsed.constitution = legacy.constitution
+            if not parsed.area:
+                parsed.area = legacy.area
+            if not parsed.season:
+                parsed.season = legacy.season
+            merged_advice_types = list(dict.fromkeys([*parsed.advice_types, *legacy.advice_types]))
+            if not merged_advice_types and legacy.advice_type:
+                merged_advice_types = [legacy.advice_type]
+            parsed.advice_types = merged_advice_types
+            parsed.advice_type = parsed.advice_type or (merged_advice_types[0] if merged_advice_types else None)
+            return parsed
+        return self.parser.parse(message, state)
+
+    @staticmethod
+    def _general_route(answer: str) -> str:
+        return "unsupported" if answer == UNSUPPORTED_ANSWER else "smalltalk"
 
     @staticmethod
     def _advice_type(parsed) -> str | None:
@@ -392,6 +499,8 @@ class ChatService:
         need_clarification: bool,
         clarification_question: str | None,
         metrics: dict[str, object] | None = None,
+        route: str | None = None,
+        tool_call: ToolCall | None = None,
     ) -> str:
         return self._sse(
             "done",
@@ -412,6 +521,8 @@ class ChatService:
                     **(metrics or {}),
                     "thinking_mode": self.settings.thinking_display_mode,
                 },
+                "route": route,
+                "tool_call": tool_call.model_dump() if tool_call else None,
             },
         )
 
