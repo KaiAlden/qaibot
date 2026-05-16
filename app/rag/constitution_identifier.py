@@ -16,12 +16,22 @@ class ConstitutionIdentifier:
         self.llm = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url or None)
 
     def identify(self, message: str) -> dict:
-        candidates = self.store.search(
-            self.settings.qdrant_constitution_collection,
-            message,
-            filters={"type": "constitution_identify"},
-            limit=self.settings.constitution_identify_top_k,
-        )
+        try:
+            candidates = self.store.search(
+                self.settings.qdrant_constitution_collection,
+                message,
+                filters={"type": "constitution_identify"},
+                limit=self.settings.constitution_identify_top_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "primary_constitution": None,
+                "secondary_constitution": None,
+                "confidence": "low",
+                "matched_symptoms": [],
+                "reasoning": "体质识别资料服务暂时不可用，请稍后重试。",
+                "error": str(exc),
+            }
         context = "\n\n---\n\n".join(item["payload"].get("content", "") for item in candidates)
         if not context:
             return {
@@ -51,12 +61,22 @@ class ConstitutionIdentifier:
   "reasoning": "简短说明"
 }}"""
 
-        response = self.llm.chat.completions.create(
-            model=self.settings.llm_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
+        try:
+            response = self.llm.chat.completions.create(
+                model=self.settings.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "primary_constitution": None,
+                "secondary_constitution": None,
+                "confidence": "low",
+                "matched_symptoms": [],
+                "reasoning": "体质识别模型服务暂时不可用，请稍后重试。",
+                "error": str(exc),
+            }
         try:
             result = json.loads(response.choices[0].message.content or "{}")
         except json.JSONDecodeError:
@@ -78,12 +98,15 @@ class ConstitutionIdentifier:
         }
 
     def retrieve_explanation(self, message: str, constitution: str) -> list[dict]:
-        results = self.store.search(
-            self.settings.qdrant_constitution_collection,
-            message,
-            filters={"type": "constitution_identify", "constitution": constitution},
-            limit=1,
-        )
+        try:
+            results = self.store.search(
+                self.settings.qdrant_constitution_collection,
+                message,
+                filters={"type": "constitution_identify", "constitution": constitution},
+                limit=1,
+            )
+        except Exception:  # noqa: BLE001
+            return []
         for item in results:
             item["fallback_level"] = "constitution"
         return results

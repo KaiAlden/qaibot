@@ -39,12 +39,14 @@ def parse_model_output(
     if not text:
         return ParsedOutput("", "")
 
+    tagged = _extract_structured_tag_blocks(text, start_tag, end_tag, answer_start_tag, answer_end_tag)
+    if tagged:
+        return tagged
+
     lower_text = text.lower()
     start_lower = start_tag.lower()
     end_lower = end_tag.lower()
     answer_start_lower = answer_start_tag.lower()
-    answer_end_lower = answer_end_tag.lower()
-
     start = lower_text.find(start_lower)
     end = lower_text.find(end_lower)
     answer_start = lower_text.find(answer_start_lower)
@@ -291,6 +293,67 @@ def summarize_thinking(text: str, max_chars: int) -> str:
     if max_chars <= 0 or len(normalized) <= max_chars:
         return normalized
     return normalized[:max_chars].rstrip() + "..."
+
+
+def _extract_structured_tag_blocks(
+    text: str,
+    start_tag: str,
+    end_tag: str,
+    answer_start_tag: str,
+    answer_end_tag: str,
+) -> ParsedOutput | None:
+    answers = _find_tag_blocks(text, answer_start_tag, answer_end_tag)
+    if answers:
+        answer_start, answer_end, answer = answers[-1]
+        thinking = ""
+        thinking_blocks = [
+            block
+            for block in _find_tag_blocks(text[:answer_start], start_tag, end_tag)
+            if block[1] <= answer_start
+        ]
+        if thinking_blocks:
+            thinking = thinking_blocks[-1][2]
+        elif _looks_like_thinking(text[:answer_start]):
+            thinking = text[:answer_start]
+        return ParsedOutput(_clean(thinking), _clean(answer))
+
+    thinking_blocks = _find_tag_blocks(text, start_tag, end_tag)
+    if thinking_blocks:
+        thinking_start, thinking_end, thinking = thinking_blocks[-1]
+        answer_source = text[:thinking_start] + text[thinking_end:]
+        answer = _extract_answer(answer_source, answer_start_tag, answer_end_tag)
+        return ParsedOutput(_clean(thinking), _clean(answer))
+
+    return None
+
+
+def _find_tag_blocks(text: str, start_tag: str, end_tag: str) -> list[tuple[int, int, str]]:
+    lower_text = text.lower()
+    start_lower = start_tag.lower()
+    end_lower = end_tag.lower()
+    blocks: list[tuple[int, int, str]] = []
+    search_from = 0
+    while True:
+        start = lower_text.find(start_lower, search_from)
+        if start < 0:
+            break
+        content_start = start + len(start_tag)
+        end = lower_text.find(end_lower, content_start)
+        if end < 0:
+            break
+        block_end = end + len(end_tag)
+        if _is_standalone_tag(text, start, len(start_tag)) and _is_standalone_tag(text, end, len(end_tag)):
+            blocks.append((start, block_end, text[content_start:end]))
+        search_from = block_end
+    return blocks
+
+
+def _is_standalone_tag(text: str, start: int, length: int) -> bool:
+    before = text[:start].rstrip(" \t")
+    after = text[start + length :].lstrip(" \t")
+    before_ok = not before or before.endswith(("\n", "\r"))
+    after_ok = not after or after.startswith(("\n", "\r"))
+    return before_ok and after_ok
 
 
 def _extract_answer(text: str, start_tag: str, end_tag: str) -> str:

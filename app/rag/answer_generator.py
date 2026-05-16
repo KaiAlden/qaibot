@@ -6,6 +6,7 @@ from openai import OpenAI
 
 from app.config import Settings
 from app.rag.thinking import StreamPart, ThinkingStreamParser, parse_model_output, summarize_thinking
+from app.schemas import TurnContext
 
 
 class AnswerGenerator:
@@ -23,8 +24,9 @@ class AnswerGenerator:
         session: dict,
         retrieved: list[dict],
         identification: dict | None = None,
+        turn_context: TurnContext | None = None,
     ) -> str:
-        prompt = self._build_prompt(message, session, retrieved, identification)
+        prompt = self._build_prompt(message, session, retrieved, identification, turn_context)
         response = self.llm.chat.completions.create(
             model=self.settings.llm_model,
             messages=self._messages(prompt),
@@ -40,6 +42,7 @@ class AnswerGenerator:
             self.settings.thinking_answer_start_tag,
             self.settings.thinking_answer_end_tag,
         )
+
         if reasoning and not parsed.thinking:
             parsed_answer = parsed.answer or content.strip()
             return parsed_answer
@@ -51,8 +54,9 @@ class AnswerGenerator:
         session: dict,
         retrieved: list[dict],
         identification: dict | None = None,
+        turn_context: TurnContext | None = None,
     ) -> Iterator[StreamPart]:
-        prompt = self._build_prompt(message, session, retrieved, identification)
+        prompt = self._build_prompt(message, session, retrieved, identification, turn_context)
         response = self.llm.chat.completions.create(
             model=self.settings.llm_model,
             messages=self._messages(prompt),
@@ -84,8 +88,9 @@ class AnswerGenerator:
         session: dict,
         retrieved: list[dict],
         identification: dict | None = None,
+        turn_context: TurnContext | None = None,
     ) -> int:
-        return len(self._build_prompt(message, session, retrieved, identification))
+        return len(self._build_prompt(message, session, retrieved, identification, turn_context))
 
     def _messages(self, prompt: str) -> list[dict[str, str]]:
         return [
@@ -117,6 +122,7 @@ class AnswerGenerator:
         session: dict,
         retrieved: list[dict],
         identification: dict | None = None,
+        turn_context: TurnContext | None = None,
     ) -> str:
         context = self._context_text(retrieved)
         runtime_context_text = self._runtime_context_text(session.get("_runtime_context") or {})
@@ -132,6 +138,7 @@ class AnswerGenerator:
                 f"匹配症状：{matched or '未明确列出'}。"
                 f"{identification.get('reasoning', '')}"
             )
+        scope_text = self._scope_text(session, turn_context)
 
         return f"""你是专业、温和、谨慎的中医体质饮食调理助手。
 
@@ -139,10 +146,13 @@ class AnswerGenerator:
 {message}
 
 当前会话信息：
-- 体质：{session.get("constitution")}
+- 用户长期体质画像：{session.get("user_constitution")}
 - 兼夹体质：{session.get("secondary_constitution")}
 - 地区：{session.get("area")}
 - 季节：{session.get("season")}
+
+本轮体质作用域：
+{scope_text}
 
 最近对话历史：
 {history_text}
@@ -168,11 +178,40 @@ class AnswerGenerator:
         max_chars = self.settings.rag_chunk_max_chars
         for item in retrieved:
             content = str(item["payload"].get("content", "")).strip()
+            target = item.get("target_constitution") or item["payload"].get("target_constitution")
+            if target and content:
+                content = f"【本轮检索对象：{target}】\n{content}"
             if max_chars > 0 and len(content) > max_chars:
                 content = content[:max_chars].rstrip() + "..."
             if content:
                 chunks.append(content)
         return "\n\n---\n\n".join(chunks) if chunks else "无"
+
+    @staticmethod
+    def _scope_text(session: dict, turn_context: TurnContext | None) -> str:
+        if not turn_context:
+            return (
+                f"- 本轮讨论对象：{session.get('target_constitution') or '未明确'}\n"
+                "- 说明：未提供结构化作用域，请不要主动扩大用户体质画像。"
+            )
+        targets = "、".join(turn_context.target_constitutions) or "未明确"
+        last_topics = "、".join(turn_context.last_topic_constitutions) or "无"
+        user_constitution = turn_context.user_constitution or "未明确"
+        allow = "可以" if turn_context.allow_user_profile_in_answer else "不可以"
+        lines = [
+            f"- 用户长期体质画像：{user_constitution}",
+            f"- 本轮讨论对象：{targets}",
+            f"- 最近话题体质：{last_topics}",
+            f"- 本轮作用域类型：{turn_context.scope_type}",
+            f"- 是否可把用户长期体质作为主体回答依据：{allow}",
+        ]
+        if turn_context.target_constitutions and turn_context.user_constitution:
+            if turn_context.user_constitution not in turn_context.target_constitutions:
+                lines.append("- 注意：用户长期体质和本轮讨论对象不同，主体回答必须围绕本轮讨论对象。")
+                lines.append("- 如需提到用户长期体质，只能作为补充提醒，并明确二者不是同一件事。")
+        if turn_context.scope_type == "comparison":
+            lines.append("- 比较类问题请按体质分组说明，再总结共同点和差异点，避免混合成一种建议。")
+        return "\n".join(lines)
 
     @staticmethod
     def _runtime_context_text(runtime_context: dict) -> str:

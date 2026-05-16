@@ -34,10 +34,13 @@ class SessionStore:
                 row = cur.fetchone()
         if not row:
             return self._empty_state()
-        return {**self._empty_state(), **json.loads(row[0])}
+        state = {**self._empty_state(), **json.loads(row[0])}
+        state.pop("constitution", None)
+        return state
 
     def save(self, user_id: str, conversation_id: str, state: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        state.pop("constitution", None)
         state["history"] = self._trim_history(state.get("history", []))
         state_json = json.dumps(state, ensure_ascii=False)
 
@@ -61,12 +64,17 @@ class SessionStore:
 
     def to_public_state(self, state: dict[str, Any]) -> SessionState:
         return SessionState(
-            constitution=state.get("constitution"),
+            user_constitution=state.get("user_constitution"),
             secondary_constitution=state.get("secondary_constitution"),
+            target_constitutions=state.get("target_constitutions") or [],
+            last_topic_constitutions=state.get("last_topic_constitutions") or [],
+            last_topic_turn_index=state.get("last_topic_turn_index"),
+            turn_index=state.get("turn_index") or 0,
             area=state.get("area"),
             season=state.get("season"),
             last_intent=state.get("last_intent"),
             last_advice_types=state.get("last_advice_types") or [],
+            pending_clarification=state.get("pending_clarification"),
         )
 
     def cleanup_expired(self) -> int:
@@ -130,11 +138,17 @@ class SessionStore:
     @staticmethod
     def _empty_state() -> dict[str, Any]:
         return {
-            "constitution": None,
+            "user_constitution": None,
             "secondary_constitution": None,
+            "target_constitutions": [],
+            "last_topic_constitutions": [],
+            "last_topic_turn_index": None,
+            "turn_index": 0,
+            "non_tcm_turns_since_topic": 0,
             "area": None,
             "season": None,
             "last_intent": None,
             "last_advice_types": [],
+            "pending_clarification": None,
             "history": [],
         }

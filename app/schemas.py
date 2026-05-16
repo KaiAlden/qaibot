@@ -18,6 +18,7 @@ Intent = Literal[
 
 Route = Literal["tcm_health", "weather", "music", "web_search", "smalltalk", "unsupported"]
 ToolStatus = Literal["pending", "success", "failed", "not_configured"]
+ScopeType = Literal["self_query", "topic_query", "comparison", "followup", "identify", "unknown"]
 
 
 class RuntimeContext(BaseModel):
@@ -41,6 +42,7 @@ class RetrievedChunk(BaseModel):
     score: float
     type: str
     fallback_level: str | None = None
+    target_constitution: str | None = None
 
 
 class ToolCall(BaseModel):
@@ -51,12 +53,17 @@ class ToolCall(BaseModel):
 
 
 class SessionState(BaseModel):
-    constitution: str | None = None
+    user_constitution: str | None = None
     secondary_constitution: str | None = None
+    target_constitutions: list[str] = Field(default_factory=list)
+    last_topic_constitutions: list[str] = Field(default_factory=list)
+    last_topic_turn_index: int | None = None
+    turn_index: int = 0
     area: str | None = None
     season: str | None = None
     last_intent: str | None = None
     last_advice_types: list[str] = Field(default_factory=list)
+    pending_clarification: dict[str, Any] | None = None
 
 
 class ChatResponse(BaseModel):
@@ -78,6 +85,21 @@ class ParsedIntent(BaseModel):
     advice_type: str | None = None
     advice_types: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class TurnContext(BaseModel):
+    user_constitution: str | None = None
+    secondary_constitution: str | None = None
+    target_constitutions: list[str] = Field(default_factory=list)
+    last_topic_constitutions: list[str] = Field(default_factory=list)
+    scope_type: ScopeType = "unknown"
+    should_update_user_profile: bool = False
+    needs_scope_clarification: bool = False
+    clarification_question: str | None = None
+    allow_user_profile_in_answer: bool = True
+    mentioned_constitutions: list[str] = Field(default_factory=list)
+    turns_since_last_topic: int | None = None
+    reason: str | None = None
 
 
 class RoutedTask(BaseModel):

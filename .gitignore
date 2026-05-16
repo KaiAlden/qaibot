@@ -1,6 +1,10 @@
 .env
 .env.example
 data/
+Report.md
+TODO.md
+tests_eval/
+exdemo.md
 
 __pycache__/
 *.pyc
